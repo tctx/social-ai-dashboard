@@ -3,6 +3,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const fetch = require('node-fetch');
 const FormData = require('form-data');
+const fs = require('fs');
 const path = require('path');
 const app = express();
 
@@ -14,6 +15,35 @@ let messages = []; // In-memory store for MVP; replace with DB later
 let conversations = {}; // Group messages by chat_id for conversation view
 let instagramAccountId = null; // Store connected IG account ID after auth
 const processedMessages = new Set(); // Track processed provider_message_ids to avoid duplicates
+
+// Session persistence functions
+function saveSession() {
+  if (instagramAccountId) {
+    const sessionData = {
+      instagramAccountId,
+      timestamp: new Date().toISOString()
+    };
+    fs.writeFileSync('./session.json', JSON.stringify(sessionData, null, 2));
+    console.log('💾 Session saved to file');
+  }
+}
+
+function loadSession() {
+  try {
+    if (fs.existsSync('./session.json')) {
+      const sessionData = JSON.parse(fs.readFileSync('./session.json', 'utf8'));
+      if (sessionData.instagramAccountId) {
+        instagramAccountId = sessionData.instagramAccountId;
+        console.log('📂 Session restored from file:', instagramAccountId);
+        console.log('🕐 Session saved at:', sessionData.timestamp);
+        return true;
+      }
+    }
+  } catch (error) {
+    console.log('❌ Failed to load session:', error.message);
+  }
+  return false;
+}
 
 // Middleware
 app.use(bodyParser.json());
@@ -110,6 +140,7 @@ app.post('/api/unipile/auth', async (req, res) => {
       console.log('⏰ Request completed at:', new Date().toISOString());
       clearTimeout(timeoutId);
       instagramAccountId = authData.account_id; // Store for sending messages
+      saveSession(); // Save session to file
       res.json({ success: true, account_id: instagramAccountId });
     } else {
       console.log('❌ Authentication failed with status:', authResponse.status);
@@ -305,6 +336,61 @@ app.get('/api/conversations/:conversation_id', (req, res) => {
   res.json({
     ...conversation,
     conversation_id: req.params.conversation_id
+  });
+});
+
+// Logout endpoint to disconnect Instagram account
+app.post('/api/logout', async (req, res) => {
+  console.log('🚪 Logout request received');
+  
+  if (!instagramAccountId) {
+    console.log('❌ No active session to logout');
+    return res.status(400).json({ error: 'No active session' });
+  }
+  
+  try {
+    console.log('📤 Sending logout request to Unipile for account:', instagramAccountId);
+    
+    const response = await fetch(`${UNIPILE_DSN}/api/v1/accounts/${instagramAccountId}`, {
+      method: 'DELETE',
+      headers: {
+        'X-API-KEY': UNIPILE_TOKEN,
+        'Accept': 'application/json'
+      }
+    });
+    
+    console.log('📥 Logout response status:', response.status);
+    const responseData = await response.json();
+    console.log('📄 Logout response data:', JSON.stringify(responseData, null, 2));
+    
+    if (response.ok) {
+      console.log('✅ Successfully logged out from Unipile');
+      instagramAccountId = null; // Clear the stored account ID
+      
+      // Clear the session file
+      const fs = require('fs');
+      const sessionFile = './session.json';
+      if (fs.existsSync(sessionFile)) {
+        fs.unlinkSync(sessionFile);
+        console.log('🗑️ Session file deleted');
+      }
+      
+      res.json({ success: true, message: 'Logged out successfully' });
+    } else {
+      console.log('❌ Failed to logout:', responseData);
+      res.status(response.status).json({ error: responseData.message || responseData.detail || 'Failed to logout' });
+    }
+  } catch (error) {
+    console.log('💥 Exception during logout:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Session status endpoint
+app.get('/api/session-status', (req, res) => {
+  res.json({ 
+    connected: !!instagramAccountId,
+    account_id: instagramAccountId 
   });
 });
 
@@ -606,8 +692,11 @@ app.get('/', (req, res) => {
         <button id="testMessageBtn" class="btn btn-outline-light me-2" onclick="sendTestMessage()" style="display: none;">
           <i class="bi bi-chat-dots me-2"></i>Test Message
         </button>
-        <button class="connect-btn" data-bs-toggle="modal" data-bs-target="#instagramModal">
+        <button id="connectBtn" class="connect-btn" data-bs-toggle="modal" data-bs-target="#instagramModal">
           <i class="bi bi-instagram me-2"></i>Connect Instagram
+        </button>
+        <button id="logoutBtn" class="btn btn-outline-danger ms-2" onclick="logoutInstagram()" style="display: none;">
+          <i class="bi bi-box-arrow-right me-2"></i>Logout
         </button>
       </div>
     </div>
@@ -792,19 +881,22 @@ app.get('/', (req, res) => {
     function updateConnectionStatus(connected) {
       isConnected = connected;
       const statusElement = document.getElementById('connectionStatus');
-      const connectBtn = document.querySelector('.connect-btn');
+      const connectBtn = document.getElementById('connectBtn');
+      const logoutBtn = document.getElementById('logoutBtn');
       const testBtn = document.getElementById('testMessageBtn');
       
       if (connected) {
         statusElement.innerHTML = '<i class="bi bi-check-circle me-2"></i>Connected';
         statusElement.className = 'connection-status status-connected';
-        connectBtn.innerHTML = '<i class="bi bi-gear me-2"></i>Settings';
-        testBtn.style.display = 'inline-block'; // Show test button when connected
+        connectBtn.style.display = 'none';
+        logoutBtn.style.display = 'inline-block';
+        testBtn.style.display = 'inline-block';
       } else {
         statusElement.innerHTML = '<i class="bi bi-x-circle me-2"></i>Not Connected';
         statusElement.className = 'connection-status status-disconnected';
-        connectBtn.innerHTML = '<i class="bi bi-instagram me-2"></i>Connect Instagram';
-        testBtn.style.display = 'none'; // Hide test button when disconnected
+        connectBtn.style.display = 'inline-block';
+        logoutBtn.style.display = 'none';
+        testBtn.style.display = 'none';
       }
     }
 
@@ -824,6 +916,42 @@ app.get('/', (req, res) => {
         loadMessages(); // Refresh the message list
       } catch (error) {
         console.error('Error sending test message:', error);
+      }
+    }
+
+    async function logoutInstagram() {
+      if (!confirm('Are you sure you want to logout? This will disconnect your Instagram account.')) {
+        return;
+      }
+      
+      console.log('Logging out...');
+      try {
+        const response = await fetch('/api/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+          updateConnectionStatus(false);
+          alert('Successfully logged out!');
+          console.log('Logout successful');
+          
+          // Clear any cached messages
+          allMessages = [];
+          allConversations = [];
+          loadMessages();
+          if (currentView === 'conversations') {
+            loadConversations();
+          }
+        } else {
+          alert('Failed to logout: ' + (data.error || 'Unknown error'));
+          console.error('Logout failed:', data.error);
+        }
+      } catch (error) {
+        console.error('Error during logout:', error);
+        alert('Error during logout: ' + error.message);
       }
     }
 
@@ -1047,6 +1175,21 @@ app.get('/', (req, res) => {
       loadMessages();
     }
 
+    // Check session status on page load
+    async function checkSessionStatus() {
+      try {
+        const response = await fetch('/api/session-status');
+        const data = await response.json();
+        if (data.connected) {
+          updateConnectionStatus(true);
+          console.log('Session restored from server');
+        }
+      } catch (error) {
+        console.error('Error checking session status:', error);
+      }
+    }
+
+    checkSessionStatus(); // Check if already connected
     loadMessages();
     setInterval(loadMessages, 30000); // Poll every 30 seconds instead of 5
   </script>
@@ -1055,4 +1198,11 @@ app.get('/', (req, res) => {
 });
 
 // Start server
+// Load session on startup
+if (loadSession()) {
+  console.log('🔄 Previous session restored successfully');
+} else {
+  console.log('🆕 Starting with fresh session');
+}
+
 app.listen(7655, () => console.log('🚀 Server running on http://localhost:7655'));

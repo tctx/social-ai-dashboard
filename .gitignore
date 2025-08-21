@@ -1,6 +1,9 @@
 # Environment variables
 .env
 
+# Session persistence
+session.json
+
 # Node modules
 node_modules/
 
