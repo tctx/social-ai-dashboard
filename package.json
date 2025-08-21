@@ -1,0 +1,28 @@
+{
+  "name": "social-ai-dashboard",
+  "version": "1.0.0",
+  "description": "MVP Social Media AI Response Dashboard",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node app.js"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "dotenv": "^17.2.1",
+    "express": "^4.18.2",
+    "form-data": "^4.0.4",
+    "node-fetch": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "keywords": [
+    "social-media",
+    "ai",
+    "dashboard",
+    "express"
+  ],
+  "author": "",
+  "license": "MIT"
+}
