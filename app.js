@@ -16,6 +16,12 @@ let conversations = {}; // Group messages by chat_id for conversation view
 let instagramAccountId = null; // Store connected IG account ID after auth
 const processedMessages = new Set(); // Track processed provider_message_ids to avoid duplicates
 
+// Default prompts
+let prompts = {
+  initial: "You are the social media manager for a restaurant brand. The user asked on {platform}: \"{userMessage}\". Reply on-brand, relevant, informative, timely.",
+  regenerate: "You are the social media manager for a restaurant brand. The user asked on {platform}: \"{userMessage}\". The previous response was: \"{previousResponse}\". Generate an improved response that is more engaging, informative, and on-brand."
+};
+
 // Session persistence functions
 function saveSession() {
   if (instagramAccountId) {
@@ -41,6 +47,30 @@ function loadSession() {
     }
   } catch (error) {
     console.log('❌ Failed to load session:', error.message);
+  }
+  return false;
+}
+
+// Prompt persistence functions
+function savePrompts() {
+  try {
+    fs.writeFileSync('./prompts.json', JSON.stringify(prompts, null, 2));
+    console.log('💾 Prompts saved to file');
+  } catch (error) {
+    console.log('❌ Failed to save prompts:', error.message);
+  }
+}
+
+function loadPrompts() {
+  try {
+    if (fs.existsSync('./prompts.json')) {
+      const savedPrompts = JSON.parse(fs.readFileSync('./prompts.json', 'utf8'));
+      prompts = { ...prompts, ...savedPrompts };
+      console.log('📂 Prompts loaded from file');
+      return true;
+    }
+  } catch (error) {
+    console.log('❌ Failed to load prompts:', error.message);
   }
   return false;
 }
@@ -394,6 +424,27 @@ app.get('/api/session-status', (req, res) => {
   });
 });
 
+// Get prompts endpoint
+app.get('/api/prompts', (req, res) => {
+  res.json(prompts);
+});
+
+// Save prompts endpoint
+app.post('/api/prompts', (req, res) => {
+  const { initial, regenerate } = req.body;
+  
+  if (!initial || !regenerate) {
+    return res.status(400).json({ error: 'Both initial and regenerate prompts are required' });
+  }
+  
+  prompts.initial = initial;
+  prompts.regenerate = regenerate;
+  savePrompts();
+  
+  console.log('✅ Prompts updated successfully');
+  res.json({ success: true, prompts });
+});
+
 // Generate AI response endpoint for frontend
 app.post('/api/generate-response', async (req, res) => {
   const { text, platform } = req.body;
@@ -595,8 +646,20 @@ app.post('/api/send/:id', async (req, res) => {
 });
 
 // --- AI Generation Function ---
-async function generateAIResponse(userMessage, platform) {
-  const prompt = `You are the social media manager for a restaurant brand. The user asked on ${platform}: "${userMessage}". Reply on-brand, relevant, informative, timely.`;
+async function generateAIResponse(userMessage, platform, isRegenerate = false, previousResponse = '', userName = '') {
+  const templatePrompt = isRegenerate ? prompts.regenerate : prompts.initial;
+  
+  // Replace template variables
+  const prompt = templatePrompt
+    .replace(/{userMessage}/g, userMessage)
+    .replace(/{platform}/g, platform)
+    .replace(/{userName}/g, userName)
+    .replace(/{previousResponse}/g, previousResponse)
+    .replace(/{businessName}/g, 'Your Restaurant') // You can make this configurable too
+    .replace(/{conversationHistory}/g, ''); // Could add conversation context here
+  
+  console.log('🤖 Using prompt:', prompt.substring(0, 100) + '...');
+  
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -606,7 +669,7 @@ async function generateAIResponse(userMessage, platform) {
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       messages: [{ role: 'system', content: prompt }],
-      max_tokens: 100
+      max_tokens: 150
     })
   });
   const data = await resp.json();
@@ -695,6 +758,9 @@ app.get('/', (req, res) => {
         <button id="connectBtn" class="connect-btn" data-bs-toggle="modal" data-bs-target="#instagramModal">
           <i class="bi bi-instagram me-2"></i>Connect Instagram
         </button>
+        <button class="btn btn-outline-light ms-2" data-bs-toggle="modal" data-bs-target="#promptModal">
+          <i class="bi bi-gear me-2"></i>Prompts
+        </button>
         <button id="logoutBtn" class="btn btn-outline-danger ms-2" onclick="logoutInstagram()" style="display: none;">
           <i class="bi bi-box-arrow-right me-2"></i>Logout
         </button>
@@ -763,6 +829,75 @@ app.get('/', (req, res) => {
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt Settings Modal -->
+  <div class="modal fade" id="promptModal" tabindex="-1" aria-labelledby="promptModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header" style="background: linear-gradient(45deg, #6f42c1, #e83e8c); color: white;">
+          <h5 class="modal-title" id="promptModalLabel">
+            <i class="bi bi-gear me-2"></i>AI Prompt Settings
+          </h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-4">
+            <label for="initialPrompt" class="form-label fw-bold">
+              <i class="bi bi-chat-text me-1"></i>Initial Response Prompt
+            </label>
+            <small class="text-muted d-block mb-2">
+              This prompt is used when generating the first AI response to incoming messages.
+            </small>
+            <textarea id="initialPrompt" class="form-control" rows="4" placeholder="Enter the prompt for initial AI responses..."></textarea>
+          </div>
+          
+          <div class="mb-4">
+            <label for="regeneratePrompt" class="form-label fw-bold">
+              <i class="bi bi-arrow-clockwise me-1"></i>Regenerate Response Prompt
+            </label>
+            <small class="text-muted d-block mb-2">
+              This prompt is used when regenerating or improving existing responses.
+            </small>
+            <textarea id="regeneratePrompt" class="form-control" rows="4" placeholder="Enter the prompt for regenerating responses..."></textarea>
+          </div>
+          
+          <div class="mb-3">
+            <h6 class="fw-bold">Available Variables:</h6>
+            <div class="row">
+              <div class="col-md-6">
+                <small class="text-muted">
+                  • <code>{userMessage}</code> - The customer's message<br>
+                  • <code>{platform}</code> - Social media platform (Instagram)<br>
+                  • <code>{userName}</code> - Customer's name
+                </small>
+              </div>
+              <div class="col-md-6">
+                <small class="text-muted">
+                  • <code>{previousResponse}</code> - Previous AI response (regenerate only)<br>
+                  • <code>{conversationHistory}</code> - Recent message history<br>
+                  • <code>{businessName}</code> - Your business name
+                </small>
+              </div>
+            </div>
+          </div>
+          
+          <div class="alert alert-info">
+            <i class="bi bi-lightbulb me-2"></i>
+            <strong>Tip:</strong> Make your prompts specific to your brand voice and include guidelines for tone, length, and response style.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-success" onclick="resetToDefaults()">
+            <i class="bi bi-arrow-counterclockwise me-1"></i>Reset to Defaults
+          </button>
+          <button type="button" class="btn btn-primary" onclick="savePrompts()">
+            <i class="bi bi-check-lg me-1"></i>Save Prompts
+          </button>
         </div>
       </div>
     </div>
@@ -938,13 +1073,22 @@ app.get('/', (req, res) => {
           alert('Successfully logged out!');
           console.log('Logout successful');
           
-          // Clear any cached messages
+          // Clear all messages and conversations from UI
           allMessages = [];
           allConversations = [];
-          loadMessages();
-          if (currentView === 'conversations') {
-            loadConversations();
-          }
+          
+          // Clear the message list display
+          const messageList = document.getElementById('messageList');
+          const conversationList = document.getElementById('conversationList');
+          messageList.innerHTML = '<div class="p-3 text-muted text-center">No messages</div>';
+          conversationList.innerHTML = '<div class="p-3 text-muted text-center">No conversations</div>';
+          
+          // Reset main panel
+          document.getElementById('mainPanel').classList.remove('d-none');
+          document.getElementById('conversationView').classList.add('d-none');
+          
+          // Close any open conversations
+          closeConversation();
         } else {
           alert('Failed to logout: ' + (data.error || 'Unknown error'));
           console.error('Logout failed:', data.error);
@@ -954,6 +1098,60 @@ app.get('/', (req, res) => {
         alert('Error during logout: ' + error.message);
       }
     }
+
+    // Prompt management functions
+    async function loadPrompts() {
+      try {
+        const response = await fetch('/api/prompts');
+        const prompts = await response.json();
+        
+        document.getElementById('initialPrompt').value = prompts.initial;
+        document.getElementById('regeneratePrompt').value = prompts.regenerate;
+      } catch (error) {
+        console.error('Error loading prompts:', error);
+      }
+    }
+
+    async function savePrompts() {
+      const initial = document.getElementById('initialPrompt').value;
+      const regenerate = document.getElementById('regeneratePrompt').value;
+      
+      if (!initial.trim() || !regenerate.trim()) {
+        alert('Both prompts are required');
+        return;
+      }
+      
+      try {
+        const response = await fetch('/api/prompts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initial, regenerate })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+          alert('Prompts saved successfully!');
+          bootstrap.Modal.getInstance(document.getElementById('promptModal')).hide();
+        } else {
+          alert('Failed to save prompts: ' + (data.error || 'Unknown error'));
+        }
+      } catch (error) {
+        console.error('Error saving prompts:', error);
+        alert('Error saving prompts: ' + error.message);
+      }
+    }
+
+    function resetToDefaults() {
+      const defaultInitial = "You are the social media manager for a restaurant brand. The user asked on {platform}: \"{userMessage}\". Reply on-brand, relevant, informative, timely.";
+      const defaultRegenerate = "You are the social media manager for a restaurant brand. The user asked on {platform}: \"{userMessage}\". The previous response was: \"{previousResponse}\". Generate an improved response that is more engaging, informative, and on-brand.";
+      
+      document.getElementById('initialPrompt').value = defaultInitial;
+      document.getElementById('regeneratePrompt').value = defaultRegenerate;
+    }
+
+    // Load prompts when the modal opens
+    document.getElementById('promptModal').addEventListener('show.bs.modal', loadPrompts);
 
     // View switching
     let currentView = 'inbox';
@@ -1198,11 +1396,17 @@ app.get('/', (req, res) => {
 });
 
 // Start server
-// Load session on startup
+// Load session and prompts on startup
 if (loadSession()) {
   console.log('🔄 Previous session restored successfully');
 } else {
   console.log('🆕 Starting with fresh session');
+}
+
+if (loadPrompts()) {
+  console.log('🔄 Custom prompts loaded successfully');
+} else {
+  console.log('🆕 Using default prompts');
 }
 
 app.listen(7655, () => console.log('🚀 Server running on http://localhost:7655'));

@@ -4,6 +4,9 @@
 # Session persistence
 session.json
 
+# Custom prompts
+prompts.json
+
 # Node modules
 node_modules/
 
